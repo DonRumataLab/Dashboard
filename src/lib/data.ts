@@ -55,7 +55,7 @@ export async function parseWorkbook(file: File, snapshotDate: string): Promise<S
   const items = rows.map(normalizeRow).filter((row) => row.planQty || row.factQty || row.shippedQty);
 
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     date: snapshotDate,
     uploadedAt: new Date().toISOString(),
     sourceName: file.name,
@@ -84,7 +84,7 @@ export async function parseControlDatesWorkbook(file: File, snapshotDate: string
     .filter((row): row is ControlDateRow => Boolean(row?.collection));
 
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     date: snapshotDate,
     uploadedAt: new Date().toISOString(),
     sourceName: file.name,
@@ -306,7 +306,7 @@ export function buildControlDateIssues(snapshot?: ControlDateSnapshot, limit = 1
 
 function normalizeRow(row: Record<string, unknown>, index: number): WorkItem {
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     order: stringValue(row, aliases.order) || `Строка ${index + 1}`,
     article: stringValue(row, aliases.article),
     product: stringValue(row, aliases.product) || stringValue(row, aliases.article) || "Изделие",
@@ -340,7 +340,7 @@ function parseControlDateRow(
   });
 
   return {
-    id: crypto.randomUUID(),
+    id: createClientId(),
     collection,
     milestones,
   };
@@ -496,4 +496,18 @@ function ratio(value: number, base: number) {
 function metric(name: string, left: number, right: number, suffix = "") {
   const delta = Math.round((right - left) * 10) / 10;
   return { name, left, right, delta, suffix };
+}
+
+function createClientId() {
+  const browserCrypto = globalThis.crypto as Crypto | undefined;
+
+  if (browserCrypto?.randomUUID) {
+    return browserCrypto.randomUUID();
+  }
+
+  const random = browserCrypto?.getRandomValues
+    ? Array.from(browserCrypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(36)).join("")
+    : Math.random().toString(36).slice(2);
+
+  return `id-${Date.now().toString(36)}-${random}`;
 }
