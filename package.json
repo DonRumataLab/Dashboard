@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "server": "node server/server.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },

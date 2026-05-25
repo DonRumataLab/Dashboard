@@ -1,4 +1,4 @@
-import { useMemo, useState, type ElementType, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -27,7 +27,8 @@ import {
   Truck,
   Upload,
 } from "lucide-react";
-import type { DashboardTab, Snapshot } from "./types";
+import type { ControlDateSnapshot, DashboardTab, Snapshot, UploadHistoryRecord } from "./types";
+import { fetchServerState, uploadSnapshotToServer } from "./lib/api";
 import {
   buildHistory,
   buildControlDateStatus,
@@ -63,21 +64,23 @@ const colors = ["#255c5c", "#e0a13a", "#4e6b9f", "#8a5a44", "#7d8f45", "#b65353"
 export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>(loadSnapshots);
   const [controlDateSnapshots, setControlDateSnapshots] = useState(loadControlDateSnapshots);
+  const [uploadHistory, setUploadHistory] = useState<UploadHistoryRecord[]>([]);
+  const [serverMode, setServerMode] = useState<"checking" | "online" | "offline">("checking");
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
-  const [activeDate, setActiveDate] = useState(snapshots.at(-1)?.date ?? "");
-  const [activeControlDate, setActiveControlDate] = useState(controlDateSnapshots.at(-1)?.date ?? "");
-  const [compareLeft, setCompareLeft] = useState(snapshots.at(0)?.date ?? "");
-  const [compareRight, setCompareRight] = useState(snapshots.at(-1)?.date ?? "");
+  const [activeSnapshotId, setActiveSnapshotId] = useState(snapshots.at(-1)?.id ?? "");
+  const [activeControlSnapshotId, setActiveControlSnapshotId] = useState(controlDateSnapshots.at(-1)?.id ?? "");
+  const [compareLeft, setCompareLeft] = useState(snapshots.at(0)?.id ?? "");
+  const [compareRight, setCompareRight] = useState(snapshots.at(-1)?.id ?? "");
   const [uploadDate, setUploadDate] = useState(new Date().toISOString().slice(0, 10));
   const [uploadMessage, setUploadMessage] = useState("");
 
   const activeSnapshot = useMemo(
-    () => snapshots.find((snapshot) => snapshot.date === activeDate) ?? snapshots.at(-1),
-    [activeDate, snapshots],
+    () => snapshots.find((snapshot) => snapshot.id === activeSnapshotId) ?? snapshots.at(-1),
+    [activeSnapshotId, snapshots],
   );
   const activeControlSnapshot = useMemo(
-    () => controlDateSnapshots.find((snapshot) => snapshot.date === activeControlDate) ?? controlDateSnapshots.at(-1),
-    [activeControlDate, controlDateSnapshots],
+    () => controlDateSnapshots.find((snapshot) => snapshot.id === activeControlSnapshotId) ?? controlDateSnapshots.at(-1),
+    [activeControlSnapshotId, controlDateSnapshots],
   );
   const kpis = useMemo(() => calculateKpis(activeSnapshot?.rows ?? []), [activeSnapshot]);
   const controlKpis = useMemo(() => calculateControlDateKpis(activeControlSnapshot), [activeControlSnapshot]);
@@ -90,38 +93,80 @@ export default function App() {
   const statusData = useMemo(() => groupByStatus(activeSnapshot?.rows ?? []), [activeSnapshot]);
   const history = useMemo(() => buildHistory(snapshots), [snapshots]);
   const comparison = useMemo(
-    () => compareSnapshots(snapshots.find((item) => item.date === compareLeft), snapshots.find((item) => item.date === compareRight)),
+    () => compareSnapshots(snapshots.find((item) => item.id === compareLeft), snapshots.find((item) => item.id === compareRight)),
     [compareLeft, compareRight, snapshots],
   );
+
+  useEffect(() => {
+    void refreshServerState();
+  }, []);
+
+  async function refreshServerState() {
+    try {
+      const state = await fetchServerState();
+      if (!state) {
+        setServerMode("offline");
+        return;
+      }
+
+      const productionSnapshots = state.snapshots
+        .filter((snapshot) => snapshot.dashboardType === "production")
+        .map((snapshot) => snapshot.payload as Snapshot);
+      const controlSnapshots = state.snapshots
+        .filter((snapshot) => snapshot.dashboardType === "controlDates")
+        .map((snapshot) => snapshot.payload as ControlDateSnapshot);
+
+      setSnapshots(productionSnapshots);
+      setControlDateSnapshots(controlSnapshots);
+      setUploadHistory(state.uploads);
+      setServerMode("online");
+
+      if (!activeSnapshotId && productionSnapshots.length) setActiveSnapshotId(productionSnapshots.at(-1)!.id);
+      if (!activeControlSnapshotId && controlSnapshots.length) setActiveControlSnapshotId(controlSnapshots.at(-1)!.id);
+    } catch {
+      setServerMode("offline");
+    }
+  }
 
   async function handleUpload(file?: File) {
     if (!file) return;
     try {
       const controlDateSnapshot = await parseControlDatesWorkbook(file, uploadDate);
       if (controlDateSnapshot) {
-        const nextControlDateSnapshots = [
-          ...controlDateSnapshots.filter((item) => item.date !== uploadDate),
-          controlDateSnapshot,
-        ].sort((a, b) => a.date.localeCompare(b.date));
+        const serverUpload = await tryPersistOnServer("controlDates", file, controlDateSnapshot);
+        const nextControlDateSnapshots = [...controlDateSnapshots, controlDateSnapshot].sort(sortSnapshotsByDataDateAndUploadTime);
         setControlDateSnapshots(nextControlDateSnapshots);
         saveControlDateSnapshots(nextControlDateSnapshots);
-        setActiveControlDate(controlDateSnapshot.date);
+        setActiveControlSnapshotId(controlDateSnapshot.id);
         setActiveTab("controlDates");
         setUploadMessage(
-          `Загружен дашборд контрольных дат: ${controlDateSnapshot.rows.length} коллекций. Снимок доступен на дату ${controlDateSnapshot.date}.`,
+          `Загружен дашборд контрольных дат: ${controlDateSnapshot.rows.length} коллекций. ${serverUpload ? "История сохранена на сервере." : "Сервер недоступен, сохранено локально."}`,
         );
         return;
       }
 
       const snapshot = await parseWorkbook(file, uploadDate);
-      const next = [...snapshots.filter((item) => item.date !== uploadDate), snapshot].sort((a, b) => a.date.localeCompare(b.date));
+      const serverUpload = await tryPersistOnServer("production", file, snapshot);
+      const next = [...snapshots, snapshot].sort(sortSnapshotsByDataDateAndUploadTime);
       setSnapshots(next);
       saveSnapshots(next);
-      setActiveDate(snapshot.date);
-      setCompareRight(snapshot.date);
-      setUploadMessage(`Загружено строк: ${snapshot.rows.length}. Снимок доступен на дату ${snapshot.date}.`);
+      setActiveSnapshotId(snapshot.id);
+      setCompareRight(snapshot.id);
+      setUploadMessage(`Загружено строк: ${snapshot.rows.length}. ${serverUpload ? "История сохранена на сервере." : "Сервер недоступен, сохранено локально."}`);
     } catch (error) {
       setUploadMessage(error instanceof Error ? error.message : "Не удалось разобрать файл.");
+    }
+  }
+
+  async function tryPersistOnServer(dashboardType: "production" | "controlDates", file: File, payload: Snapshot | ControlDateSnapshot) {
+    try {
+      const upload = await uploadSnapshotToServer({ dashboardType, snapshotDate: uploadDate, file, payload });
+      setServerMode("online");
+      await refreshServerState();
+      return upload;
+    } catch {
+      setServerMode("offline");
+      return null;
     }
   }
 
@@ -158,12 +203,12 @@ export default function App() {
           <label className="date-select">
             <CalendarDays size={18} />
             <select
-              value={activeTab === "controlDates" ? activeControlSnapshot?.date ?? "" : activeSnapshot?.date ?? ""}
-              onChange={(event) => (activeTab === "controlDates" ? setActiveControlDate(event.target.value) : setActiveDate(event.target.value))}
+              value={activeTab === "controlDates" ? activeControlSnapshot?.id ?? "" : activeSnapshot?.id ?? ""}
+              onChange={(event) => (activeTab === "controlDates" ? setActiveControlSnapshotId(event.target.value) : setActiveSnapshotId(event.target.value))}
             >
               {(activeTab === "controlDates" ? controlDateSnapshots : snapshots).map((snapshot) => (
-                <option key={snapshot.id} value={snapshot.date}>
-                  {formatDate(snapshot.date)}
+                <option key={snapshot.id} value={snapshot.id}>
+                  {formatSnapshotOption(snapshot)}
                 </option>
               ))}
             </select>
@@ -436,8 +481,12 @@ export default function App() {
                 <input type="file" accept=".xlsx,.xls" onChange={(event) => void handleUpload(event.target.files?.[0])} />
               </label>
               <div className="admin-card">
+                <div className={`server-status ${serverMode}`}>
+                  <span />
+                  {serverMode === "online" ? "Серверная БД подключена" : serverMode === "checking" ? "Проверяем серверную БД" : "Серверная БД недоступна"}
+                </div>
                 <label>
-                  Дата снимка
+                  Дата, на которую в файле есть данные
                   <input type="date" value={uploadDate} onChange={(event) => setUploadDate(event.target.value)} />
                 </label>
                 <p>{uploadMessage || "После загрузки файл появится в истории, а дашборды можно будет открыть на выбранную дату."}</p>
@@ -463,10 +512,52 @@ export default function App() {
                 ))}
               </div>
             </Panel>
+            <Panel title="История загрузок">
+              <UploadHistoryTable uploads={uploadHistory} />
+            </Panel>
           </DashboardSection>
         )}
       </section>
     </main>
+  );
+}
+
+function UploadHistoryTable({ uploads }: { uploads: UploadHistoryRecord[] }) {
+  if (!uploads.length) {
+    return <p className="empty-state">История серверных загрузок появится после первого сохранения в БД.</p>;
+  }
+
+  return (
+    <div className="table-panel embedded">
+      <table>
+        <thead>
+          <tr>
+            <th>Тип</th>
+            <th>Файл</th>
+            <th>Дата данных</th>
+            <th>Дата загрузки</th>
+            <th>Время загрузки</th>
+            <th>IP</th>
+            <th>Строк</th>
+            <th>Размер</th>
+          </tr>
+        </thead>
+        <tbody>
+          {uploads.map((upload) => (
+            <tr key={upload.id}>
+              <td>{upload.dashboardType === "controlDates" ? "Контрольные даты" : "Производство"}</td>
+              <td>{upload.originalName}</td>
+              <td>{formatDate(upload.snapshotDate)}</td>
+              <td>{formatDate(upload.uploadedAt)}</td>
+              <td>{formatTime(upload.uploadedAt)}</td>
+              <td>{upload.uploaderIp}</td>
+              <td>{upload.rowCount}</td>
+              <td>{formatFileSize(upload.fileSize)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -566,8 +657,8 @@ function DateChoice({ label, value, snapshots, onChange }: { label: string; valu
       {label}
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {snapshots.map((snapshot) => (
-          <option key={snapshot.id} value={snapshot.date}>
-            {formatDate(snapshot.date)}
+          <option key={snapshot.id} value={snapshot.id}>
+            {formatSnapshotOption(snapshot)}
           </option>
         ))}
       </select>
@@ -582,4 +673,23 @@ function formatNumber(value: number) {
 function formatDate(value?: string) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("ru-RU").format(new Date(value));
+}
+
+function formatTime(value?: string) {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+}
+
+function formatFileSize(value: number) {
+  if (value < 1024) return `${value} Б`;
+  if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} КБ`;
+  return `${Math.round(value / 1024 / 102.4) / 10} МБ`;
+}
+
+function formatSnapshotOption(snapshot: Pick<Snapshot | ControlDateSnapshot, "date" | "sourceName" | "uploadedAt">) {
+  return `${formatDate(snapshot.date)} | ${snapshot.sourceName} | ${formatTime(snapshot.uploadedAt)}`;
+}
+
+function sortSnapshotsByDataDateAndUploadTime<T extends Pick<Snapshot | ControlDateSnapshot, "date" | "uploadedAt">>(left: T, right: T) {
+  return left.date.localeCompare(right.date) || left.uploadedAt.localeCompare(right.uploadedAt);
 }

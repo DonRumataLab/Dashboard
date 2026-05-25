@@ -40,6 +40,21 @@ export type ControlDateSnapshot = {
   rows: ControlDateRow[];
 };
 
+export type DashboardType = "production" | "controlDates";
+
+export type UploadHistoryRecord = {
+  id: string;
+  dashboardType: DashboardType;
+  snapshotDate: string;
+  originalName: string;
+  storedName: string;
+  fileSize: number;
+  mimeType?: string;
+  uploadedAt: string;
+  uploaderIp: string;
+  rowCount: number;
+};
+
 export type DashboardTab = "overview" | "controlDates" | "production" | "logistics" | "history" | "compare" | "admin";
 
 export type KpiSet = {

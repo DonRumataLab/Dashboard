@@ -224,6 +224,11 @@ input[type="date"] {
   border-radius: 8px;
 }
 
+.table-panel.embedded {
+  border: 0;
+  box-shadow: none;
+}
+
 table {
   width: 100%;
   min-width: 860px;
@@ -353,6 +358,29 @@ th {
   margin: 0;
   color: #53615d;
   line-height: 1.5;
+}
+
+.server-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #53615d;
+  font-size: 14px;
+}
+
+.server-status span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e0a13a;
+}
+
+.server-status.online span {
+  background: #24714d;
+}
+
+.server-status.offline span {
+  background: #b65353;
 }
 
 .snapshot-list {
