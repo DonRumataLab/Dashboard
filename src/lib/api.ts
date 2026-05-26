@@ -67,6 +67,17 @@ export async function uploadSnapshotToServer({
   return (await response.json()) as UploadHistoryRecord;
 }
 
+export async function deleteUploadFromServer(id: string) {
+  const response = await fetch(`${API_BASE_URL}/api/uploads/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    const error = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(error?.error || "Delete failed");
+  }
+}
+
 function fileToBase64(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();

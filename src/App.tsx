@@ -25,10 +25,11 @@ import {
   PackageCheck,
   Settings,
   Truck,
+  Trash2,
   Upload,
 } from "lucide-react";
 import type { ControlDateSnapshot, DashboardTab, Snapshot, UploadHistoryRecord } from "./types";
-import { fetchServerState, uploadSnapshotToServer } from "./lib/api";
+import { deleteUploadFromServer, fetchServerState, uploadSnapshotToServer } from "./lib/api";
 import {
   buildHistory,
   buildControlDateStatus,
@@ -167,6 +168,19 @@ export default function App() {
     } catch {
       setServerMode("offline");
       return null;
+    }
+  }
+
+  async function handleDeleteUpload(upload: UploadHistoryRecord) {
+    const confirmed = window.confirm(`Удалить загрузку "${upload.originalName}" от ${formatDate(upload.snapshotDate)}?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteUploadFromServer(upload.id);
+      await refreshServerState();
+      setUploadMessage(`Удалена загрузка: ${upload.originalName}.`);
+    } catch (error) {
+      setUploadMessage(error instanceof Error ? error.message : "Не удалось удалить загрузку.");
     }
   }
 
@@ -513,7 +527,7 @@ export default function App() {
               </div>
             </Panel>
             <Panel title="История загрузок">
-              <UploadHistoryTable uploads={uploadHistory} />
+              <UploadHistoryTable uploads={uploadHistory} onDelete={handleDeleteUpload} />
             </Panel>
           </DashboardSection>
         )}
@@ -522,7 +536,7 @@ export default function App() {
   );
 }
 
-function UploadHistoryTable({ uploads }: { uploads: UploadHistoryRecord[] }) {
+function UploadHistoryTable({ uploads, onDelete }: { uploads: UploadHistoryRecord[]; onDelete: (upload: UploadHistoryRecord) => void }) {
   if (!uploads.length) {
     return <p className="empty-state">История серверных загрузок появится после первого сохранения в БД.</p>;
   }
@@ -540,6 +554,7 @@ function UploadHistoryTable({ uploads }: { uploads: UploadHistoryRecord[] }) {
             <th>IP</th>
             <th>Строк</th>
             <th>Размер</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -553,6 +568,11 @@ function UploadHistoryTable({ uploads }: { uploads: UploadHistoryRecord[] }) {
               <td>{upload.uploaderIp}</td>
               <td>{upload.rowCount}</td>
               <td>{formatFileSize(upload.fileSize)}</td>
+              <td>
+                <button className="icon-danger" type="button" onClick={() => onDelete(upload)} title="Удалить загрузку">
+                  <Trash2 size={16} />
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>

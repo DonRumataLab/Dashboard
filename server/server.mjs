@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,17 @@ const listSnapshots = db.prepare(`
   ORDER BY snapshot_date ASC, uploaded_at ASC
 `);
 
+const getUpload = db.prepare(`
+  SELECT id, file_path
+  FROM uploads
+  WHERE id = ?
+`);
+
+const deleteUpload = db.prepare(`
+  DELETE FROM uploads
+  WHERE id = ?
+`);
+
 const server = createServer(async (request, response) => {
   setCorsHeaders(response);
 
@@ -96,6 +107,13 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const record = await persistUpload(body, getClientIp(request));
       sendJson(response, record, 201);
+      return;
+    }
+
+    const deleteMatch = url.pathname.match(/^\/api\/uploads\/([^/]+)$/);
+    if (request.method === "DELETE" && deleteMatch) {
+      const deleted = await removeUpload(deleteMatch[1]);
+      sendJson(response, deleted);
       return;
     }
 
@@ -159,6 +177,22 @@ async function persistUpload(body, uploaderIp) {
   };
 }
 
+async function removeUpload(id) {
+  const record = getUpload.get(id);
+  if (!record) {
+    const error = new Error("Upload not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  deleteUpload.run(id);
+  await unlink(record.file_path).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+
+  return { deleted: true, id };
+}
+
 function readJson(request) {
   return new Promise((resolve, reject) => {
     let raw = "";
@@ -183,7 +217,7 @@ function readJson(request) {
 
 function setCorsHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
