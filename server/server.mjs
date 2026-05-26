@@ -119,7 +119,8 @@ const server = createServer(async (request, response) => {
 
     sendJson(response, { error: "Not found" }, 404);
   } catch (error) {
-    sendJson(response, { error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    const status = typeof error?.statusCode === "number" ? error.statusCode : 500;
+    sendJson(response, { error: error instanceof Error ? error.message : "Internal server error" }, status);
   }
 });
 
