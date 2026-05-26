@@ -29,7 +29,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import type { ControlDateSnapshot, DashboardTab, PortfolioSnapshot, Snapshot, UploadHistoryRecord } from "./types";
+import type { ControlDateSnapshot, DashboardTab, DashboardType, PortfolioSnapshot, Snapshot, UploadHistoryRecord } from "./types";
 import { deleteUploadFromServer, fetchServerState, uploadSnapshotToServer } from "./lib/api";
 import {
   buildHistory,
@@ -73,6 +73,11 @@ const tabs: Array<{ id: DashboardTab; label: string; icon: ElementType }> = [
 ];
 
 const colors = ["#255c5c", "#e0a13a", "#4e6b9f", "#8a5a44", "#7d8f45", "#b65353"];
+const uploadTypeOptions: Array<{ value: DashboardType; label: string; hint: string }> = [
+  { value: "portfolio", label: "Файл для портфеля", hint: "Детальная выгрузка с колонками Статус производства, Номенклатура, Количество заказ производству" },
+  { value: "controlDates", label: "Файл контрольных дат", hint: "Матрица контрольных дат по коллекциям и этапам" },
+  { value: "production", label: "Файл план-факт", hint: "Таблица с планом, фактом, отгрузкой, участками и статусами" },
+];
 
 export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>(loadSnapshots);
@@ -86,6 +91,7 @@ export default function App() {
   const [activePortfolioSnapshotId, setActivePortfolioSnapshotId] = useState(portfolioSnapshots.at(-1)?.id ?? "");
   const [compareLeft, setCompareLeft] = useState(snapshots.at(0)?.id ?? "");
   const [compareRight, setCompareRight] = useState(snapshots.at(-1)?.id ?? "");
+  const [uploadType, setUploadType] = useState<DashboardType>("portfolio");
   const [uploadDate, setUploadDate] = useState(new Date().toISOString().slice(0, 10));
   const [uploadMessage, setUploadMessage] = useState("");
 
@@ -162,22 +168,9 @@ export default function App() {
   async function handleUpload(file?: File) {
     if (!file) return;
     try {
-      const controlDateSnapshot = await parseControlDatesWorkbook(file, uploadDate);
-      if (controlDateSnapshot) {
-        const serverUpload = await tryPersistOnServer("controlDates", file, controlDateSnapshot);
-        const nextControlDateSnapshots = [...controlDateSnapshots, controlDateSnapshot].sort(sortSnapshotsByDataDateAndUploadTime);
-        setControlDateSnapshots(nextControlDateSnapshots);
-        saveControlDateSnapshots(nextControlDateSnapshots);
-        setActiveControlSnapshotId(controlDateSnapshot.id);
-        setActiveTab("controlDates");
-        setUploadMessage(
-          `Загружен дашборд контрольных дат: ${controlDateSnapshot.rows.length} коллекций. ${serverUpload ? "История сохранена на сервере." : "Сервер недоступен, сохранено локально."}`,
-        );
-        return;
-      }
-
-      const portfolioSnapshot = await parsePortfolioWorkbook(file, uploadDate);
-      if (portfolioSnapshot) {
+      if (uploadType === "portfolio") {
+        const portfolioSnapshot = await parsePortfolioWorkbook(file, uploadDate);
+        if (!portfolioSnapshot) throw new Error("Файл не похож на производственный портфель. Проверьте, что в нём есть лист выгрузки с колонками Статус производства, Номенклатура и Количество заказ производству.");
         const serverUpload = await tryPersistOnServer("portfolio", file, portfolioSnapshot);
         const nextPortfolioSnapshots = [...portfolioSnapshots, portfolioSnapshot].sort(sortSnapshotsByDataDateAndUploadTime);
         setPortfolioSnapshots(nextPortfolioSnapshots);
@@ -190,7 +183,23 @@ export default function App() {
         return;
       }
 
+      if (uploadType === "controlDates") {
+      const controlDateSnapshot = await parseControlDatesWorkbook(file, uploadDate);
+        if (!controlDateSnapshot) throw new Error("Файл не похож на контрольные даты. Проверьте, что в первой ячейке есть заголовок контрольные даты.");
+        const serverUpload = await tryPersistOnServer("controlDates", file, controlDateSnapshot);
+        const nextControlDateSnapshots = [...controlDateSnapshots, controlDateSnapshot].sort(sortSnapshotsByDataDateAndUploadTime);
+        setControlDateSnapshots(nextControlDateSnapshots);
+        saveControlDateSnapshots(nextControlDateSnapshots);
+        setActiveControlSnapshotId(controlDateSnapshot.id);
+        setActiveTab("controlDates");
+        setUploadMessage(
+          `Загружен дашборд контрольных дат: ${controlDateSnapshot.rows.length} коллекций. ${serverUpload ? "История сохранена на сервере." : "Сервер недоступен, сохранено локально."}`,
+        );
+        return;
+      }
+
       const snapshot = await parseWorkbook(file, uploadDate);
+      if (!snapshot.rows.length) throw new Error("Файл план-факт разобран, но строки с планом/фактом/отгрузкой не найдены.");
       const serverUpload = await tryPersistOnServer("production", file, snapshot);
       const next = [...snapshots, snapshot].sort(sortSnapshotsByDataDateAndUploadTime);
       setSnapshots(next);
@@ -203,7 +212,7 @@ export default function App() {
     }
   }
 
-  async function tryPersistOnServer(dashboardType: "production" | "controlDates" | "portfolio", file: File, payload: Snapshot | ControlDateSnapshot | PortfolioSnapshot) {
+  async function tryPersistOnServer(dashboardType: DashboardType, file: File, payload: Snapshot | ControlDateSnapshot | PortfolioSnapshot) {
     try {
       const upload = await uploadSnapshotToServer({ dashboardType, snapshotDate: uploadDate, file, payload });
       setServerMode("online");
@@ -693,9 +702,20 @@ export default function App() {
                   {serverMode === "online" ? "Серверная БД подключена" : serverMode === "checking" ? "Проверяем серверную БД" : "Серверная БД недоступна"}
                 </div>
                 <label>
+                  Тип загружаемого файла
+                  <select value={uploadType} onChange={(event) => setUploadType(event.target.value as DashboardType)}>
+                    {uploadTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
                   Дата, на которую в файле есть данные
                   <input type="date" value={uploadDate} onChange={(event) => setUploadDate(event.target.value)} />
                 </label>
+                <p className="upload-hint">{uploadTypeOptions.find((option) => option.value === uploadType)?.hint}</p>
                 <p>{uploadMessage || "После загрузки файл появится в истории, а дашборды можно будет открыть на выбранную дату."}</p>
               </div>
             </div>

@@ -364,6 +364,13 @@ th {
   line-height: 1.5;
 }
 
+.upload-hint {
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: #f4f7f4;
+  border: 1px solid #dce5df;
+}
+
 .server-status {
   display: flex;
   align-items: center;
