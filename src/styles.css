@@ -174,6 +174,10 @@ input[type="date"] {
   gap: 12px;
 }
 
+.portfolio-kpis {
+  grid-template-columns: repeat(6, minmax(140px, 1fr));
+}
+
 .kpi-card,
 .panel,
 .compare-card,
@@ -505,13 +509,15 @@ th {
 }
 
 .issue-list,
-.interval-list {
+.interval-list,
+.rank-list {
   display: grid;
   gap: 10px;
 }
 
 .issue-list div,
-.interval-list div {
+.interval-list div,
+.rank-list div {
   display: grid;
   gap: 4px;
   padding: 11px 12px;
@@ -531,13 +537,15 @@ th {
 }
 
 .issue-list span,
-.interval-list span {
+.interval-list span,
+.rank-list span {
   color: #53615d;
   font-size: 14px;
 }
 
 .issue-list small,
-.interval-list small {
+.interval-list small,
+.rank-list small {
   color: #66736f;
   line-height: 1.35;
 }

@@ -1,8 +1,9 @@
 import * as XLSX from "xlsx";
-import type { ControlDateRow, ControlDateSnapshot, KpiSet, Snapshot, WorkItem } from "../types";
+import type { ControlDateRow, ControlDateSnapshot, KpiSet, PortfolioItem, PortfolioSnapshot, Snapshot, WorkItem } from "../types";
 
 const STORAGE_KEY = "m-rizen-dashboard-snapshots";
 const CONTROL_DATES_STORAGE_KEY = "m-rizen-control-date-snapshots";
+const PORTFOLIO_STORAGE_KEY = "m-rizen-portfolio-snapshots";
 
 const aliases = {
   order: ["заказ", "номер заказа", "заказ покупателя", "order", "заказ-наряд"],
@@ -47,6 +48,21 @@ export function saveControlDateSnapshots(snapshots: ControlDateSnapshot[]) {
   localStorage.setItem(CONTROL_DATES_STORAGE_KEY, JSON.stringify(snapshots));
 }
 
+export function loadPortfolioSnapshots(): PortfolioSnapshot[] {
+  const raw = localStorage.getItem(PORTFOLIO_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as PortfolioSnapshot[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePortfolioSnapshots(snapshots: PortfolioSnapshot[]) {
+  localStorage.setItem(PORTFOLIO_STORAGE_KEY, JSON.stringify(snapshots));
+}
+
 export async function parseWorkbook(file: File, snapshotDate: string): Promise<Snapshot> {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer);
@@ -89,6 +105,27 @@ export async function parseControlDatesWorkbook(file: File, snapshotDate: string
     uploadedAt: new Date().toISOString(),
     sourceName: file.name,
     rows,
+  };
+}
+
+export async function parsePortfolioWorkbook(file: File, snapshotDate: string): Promise<PortfolioSnapshot | null> {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { cellDates: true });
+  const sheetName = workbook.SheetNames.find((name) => name.toLowerCase().includes("выгрузка")) ?? workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: true });
+  const headers = new Set(Object.keys(rows[0] ?? {}).map(cleanKey));
+
+  if (!headers.has("статус производства") || !headers.has("номенклатура") || !headers.has("количество заказ производству")) {
+    return null;
+  }
+
+  return {
+    id: createClientId(),
+    date: snapshotDate,
+    uploadedAt: new Date().toISOString(),
+    sourceName: file.name,
+    rows: rows.map(normalizePortfolioRow).filter((row) => row.index || row.nomenclature),
   };
 }
 
@@ -304,6 +341,116 @@ export function buildControlDateIssues(snapshot?: ControlDateSnapshot, limit = 1
     .slice(0, limit);
 }
 
+export function calculatePortfolioKpis(snapshot?: PortfolioSnapshot) {
+  const rows = snapshot?.rows ?? [];
+  const overdue = buildPortfolioStageStats(snapshot).reduce((total, stage) => total + stage.overdue, 0);
+  return {
+    positions: rows.length,
+    qty: rows.reduce((total, row) => total + row.qty, 0),
+    collections: new Set(rows.map((row) => row.collection).filter(Boolean)).size,
+    suppliers: new Set(rows.map((row) => row.supplier).filter(Boolean)).size,
+    withoutStatus: rows.filter((row) => !row.status).length,
+    canceled: rows.filter((row) => row.status.toLowerCase().includes("отмена")).length,
+    overdue,
+  };
+}
+
+export function groupPortfolioByStatus(snapshot?: PortfolioSnapshot) {
+  return topGroups(snapshot?.rows ?? [], (row) => row.status || "Без статуса");
+}
+
+export function groupPortfolioByCollection(snapshot?: PortfolioSnapshot) {
+  return topGroups(snapshot?.rows ?? [], (row) => row.collection || "Без коллекции");
+}
+
+export function groupPortfolioBySupplier(snapshot?: PortfolioSnapshot, limit = 10) {
+  return topGroups(snapshot?.rows ?? [], (row) => row.supplier || "Без поставщика", limit);
+}
+
+export function groupPortfolioByProductType(snapshot?: PortfolioSnapshot, limit = 10) {
+  return topGroups(snapshot?.rows ?? [], (row) => row.productType || "Без типа", limit);
+}
+
+export function buildPortfolioStageStats(snapshot?: PortfolioSnapshot) {
+  const today = startOfDay(new Date());
+  const stages = [
+    { key: "pps", name: "PPS", plan: "ppsPlan", fact: "ppsFact" },
+    { key: "qc", name: "QC", plan: "qcPlan", fact: "qcFact" },
+    { key: "shipment", name: "Готовность к отгрузке", plan: "shipmentReadyPlan", fact: "shipmentReadyFact" },
+    { key: "fabric", name: "Ткань", plan: "fabricPlan", fact: "fabricFact" },
+    { key: "otc", name: "Приход ГП на ОТК", plan: "otcPlan", fact: "otcFact" },
+  ] as const;
+
+  return stages.map((stage) => {
+    let planned = 0;
+    let completed = 0;
+    let overdue = 0;
+    let late = 0;
+    let early = 0;
+    let totalDelay = 0;
+
+    (snapshot?.rows ?? []).forEach((row) => {
+      const plan = row[stage.plan];
+      const fact = row[stage.fact];
+      if (plan) planned += 1;
+      if (fact) completed += 1;
+      if (plan && !fact && startOfDay(new Date(plan)) < today) overdue += 1;
+      if (plan && fact) {
+        const delta = daysBetween(new Date(plan), new Date(fact));
+        if (delta > 0) {
+          late += 1;
+          totalDelay += delta;
+        }
+        if (delta < 0) early += 1;
+      }
+    });
+
+    return {
+      key: stage.key,
+      name: stage.name,
+      planned,
+      completed,
+      overdue,
+      late,
+      early,
+      avgLateDays: late ? Math.round(totalDelay / late) : 0,
+    };
+  });
+}
+
+export function buildPortfolioProblemItems(snapshot?: PortfolioSnapshot, limit = 30) {
+  const today = startOfDay(new Date());
+  const stages = [
+    ["PPS", "ppsPlan", "ppsFact"],
+    ["QC", "qcPlan", "qcFact"],
+    ["Готовность к отгрузке", "shipmentReadyPlan", "shipmentReadyFact"],
+    ["Ткань", "fabricPlan", "fabricFact"],
+    ["Приход ГП на ОТК", "otcPlan", "otcFact"],
+  ] as const;
+
+  return (snapshot?.rows ?? [])
+    .flatMap((row) => {
+      const problems: Array<{ item: PortfolioItem; issue: string; date?: string; daysLate?: number }> = [];
+      if (!row.status) problems.push({ item: row, issue: "Нет статуса" });
+      if (!row.supplier) problems.push({ item: row, issue: "Нет поставщика" });
+      stages.forEach(([name, planKey, factKey]) => {
+        const plan = row[planKey];
+        const fact = row[factKey];
+        if (plan && !fact && startOfDay(new Date(plan)) < today) {
+          problems.push({
+            item: row,
+            issue: `Просрочен этап: ${name}`,
+            date: plan,
+            daysLate: daysBetween(new Date(plan), today),
+          });
+        }
+      });
+      return problems;
+    })
+    .sort((a, b) => (b.daysLate ?? 0) - (a.daysLate ?? 0))
+    .slice(0, limit);
+}
+
 function normalizeRow(row: Record<string, unknown>, index: number): WorkItem {
   return {
     id: createClientId(),
@@ -317,6 +464,35 @@ function normalizeRow(row: Record<string, unknown>, index: number): WorkItem {
     defectQty: numberValue(row, aliases.defectQty),
     status: stringValue(row, aliases.status) || "В работе",
     dueDate: dateValue(row, aliases.dueDate),
+  };
+}
+
+function normalizePortfolioRow(row: Record<string, unknown>): PortfolioItem {
+  return {
+    id: createClientId(),
+    index: stringValue(row, ["индекс"]),
+    collection: stringValue(row, ["коллекция"]),
+    collectionClassifier: stringValue(row, ["классификатор коллекции"]),
+    productType: stringValue(row, ["тип изделия"]),
+    productKind: stringValue(row, ["вид продукции"]),
+    nomenclature: stringValue(row, ["номенклатура"]),
+    supplier: stringValue(row, ["поставщик", "поставщик готовой продукции"]),
+    status: stringValue(row, ["статус производства"]),
+    qty: numberValue(row, ["количество заказ производству"]),
+    ppsPlan: dateValue(row, ["дата план прихода pps"]),
+    ppsFact: dateValue(row, ["дата факт прихода pps"]),
+    qcPlan: dateValue(row, ["дата план qc"]),
+    qcFact: dateValue(row, ["дата факт qc"]),
+    shipmentReadyPlan: dateValue(row, ["дата план готовность к отгрузке"]),
+    shipmentReadyFact: dateValue(row, ["дата факт готовность к отгрузке"]),
+    fabricPlan: dateValue(row, ["дата поставки ткани план"]),
+    fabricFact: dateValue(row, ["дата поставки ткани факт"]),
+    otcPlan: dateValue(row, ["дата приход гп на отк план (189)"]),
+    otcFact: dateValue(row, ["дата приход гп на отк факт (154)"]),
+    artist: stringValue(row, ["художник"]),
+    constructorName: stringValue(row, ["конструктор"]),
+    technologist: stringValue(row, ["технолог ср"]),
+    fabricManager: stringValue(row, ["менеджер ткани"]),
   };
 }
 
@@ -447,6 +623,20 @@ function addDays(date: Date, days: number) {
 
 function daysBetween(left: Date, right: Date) {
   return Math.round((startOfDay(right).getTime() - startOfDay(left).getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function topGroups<T>(rows: T[], getKey: (row: T) => string, limit = 12) {
+  return Object.values(
+    rows.reduce<Record<string, { name: string; count: number; qty: number }>>((acc, row) => {
+      const key = getKey(row);
+      acc[key] ??= { name: key, count: 0, qty: 0 };
+      acc[key].count += 1;
+      acc[key].qty += "qty" in (row as object) ? Number((row as { qty?: number }).qty ?? 0) : 0;
+      return acc;
+    }, {}),
+  )
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
 }
 
 function stringValue(row: Record<string, unknown>, names: string[]) {

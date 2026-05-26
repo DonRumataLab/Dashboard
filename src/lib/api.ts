@@ -1,4 +1,4 @@
-import type { ControlDateSnapshot, DashboardType, Snapshot, UploadHistoryRecord } from "../types";
+import type { ControlDateSnapshot, DashboardType, PortfolioSnapshot, Snapshot, UploadHistoryRecord } from "../types";
 
 const meta = import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } };
 const API_BASE_URL = meta.env?.VITE_API_BASE_URL ?? "";
@@ -10,7 +10,7 @@ type ServerSnapshot = {
   sourceName: string;
   uploadedAt: string;
   rowCount: number;
-  payload: Snapshot | ControlDateSnapshot;
+  payload: Snapshot | ControlDateSnapshot | PortfolioSnapshot;
 };
 
 export async function fetchServerState() {
@@ -43,7 +43,7 @@ export async function uploadSnapshotToServer({
   dashboardType: DashboardType;
   snapshotDate: string;
   file: File;
-  payload: Snapshot | ControlDateSnapshot;
+  payload: Snapshot | ControlDateSnapshot | PortfolioSnapshot;
 }) {
   const fileBase64 = await fileToBase64(file);
   const response = await fetch(`${API_BASE_URL}/api/uploads`, {

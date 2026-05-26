@@ -23,12 +23,13 @@ import {
   History,
   Milestone,
   PackageCheck,
+  PanelsTopLeft,
   Settings,
   Truck,
   Trash2,
   Upload,
 } from "lucide-react";
-import type { ControlDateSnapshot, DashboardTab, Snapshot, UploadHistoryRecord } from "./types";
+import type { ControlDateSnapshot, DashboardTab, PortfolioSnapshot, Snapshot, UploadHistoryRecord } from "./types";
 import { deleteUploadFromServer, fetchServerState, uploadSnapshotToServer } from "./lib/api";
 import {
   buildHistory,
@@ -36,23 +37,34 @@ import {
   buildControlDateIntervals,
   buildControlDateIssues,
   buildControlTimeline,
+  buildPortfolioProblemItems,
+  buildPortfolioStageStats,
   calculateControlDateKpis,
   calculateKpis,
+  calculatePortfolioKpis,
   compareSnapshots,
   getUpcomingControlMilestones,
+  groupPortfolioByCollection,
+  groupPortfolioByProductType,
+  groupPortfolioByStatus,
+  groupPortfolioBySupplier,
   groupByDepartment,
   groupByStatus,
   loadControlDateSnapshots,
+  loadPortfolioSnapshots,
   loadSnapshots,
   parseControlDatesWorkbook,
+  parsePortfolioWorkbook,
   parseWorkbook,
   saveControlDateSnapshots,
+  savePortfolioSnapshots,
   saveSnapshots,
 } from "./lib/data";
 
 const tabs: Array<{ id: DashboardTab; label: string; icon: ElementType }> = [
   { id: "overview", label: "Обзор", icon: Factory },
   { id: "controlDates", label: "Контрольные даты", icon: Milestone },
+  { id: "portfolio", label: "Портфель", icon: PanelsTopLeft },
   { id: "production", label: "Производство", icon: PackageCheck },
   { id: "logistics", label: "Логистика", icon: Truck },
   { id: "history", label: "История", icon: History },
@@ -65,11 +77,13 @@ const colors = ["#255c5c", "#e0a13a", "#4e6b9f", "#8a5a44", "#7d8f45", "#b65353"
 export default function App() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>(loadSnapshots);
   const [controlDateSnapshots, setControlDateSnapshots] = useState(loadControlDateSnapshots);
+  const [portfolioSnapshots, setPortfolioSnapshots] = useState(loadPortfolioSnapshots);
   const [uploadHistory, setUploadHistory] = useState<UploadHistoryRecord[]>([]);
   const [serverMode, setServerMode] = useState<"checking" | "online" | "offline">("checking");
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [activeSnapshotId, setActiveSnapshotId] = useState(snapshots.at(-1)?.id ?? "");
   const [activeControlSnapshotId, setActiveControlSnapshotId] = useState(controlDateSnapshots.at(-1)?.id ?? "");
+  const [activePortfolioSnapshotId, setActivePortfolioSnapshotId] = useState(portfolioSnapshots.at(-1)?.id ?? "");
   const [compareLeft, setCompareLeft] = useState(snapshots.at(0)?.id ?? "");
   const [compareRight, setCompareRight] = useState(snapshots.at(-1)?.id ?? "");
   const [uploadDate, setUploadDate] = useState(new Date().toISOString().slice(0, 10));
@@ -83,6 +97,10 @@ export default function App() {
     () => controlDateSnapshots.find((snapshot) => snapshot.id === activeControlSnapshotId) ?? controlDateSnapshots.at(-1),
     [activeControlSnapshotId, controlDateSnapshots],
   );
+  const activePortfolioSnapshot = useMemo(
+    () => portfolioSnapshots.find((snapshot) => snapshot.id === activePortfolioSnapshotId) ?? portfolioSnapshots.at(-1),
+    [activePortfolioSnapshotId, portfolioSnapshots],
+  );
   const kpis = useMemo(() => calculateKpis(activeSnapshot?.rows ?? []), [activeSnapshot]);
   const controlKpis = useMemo(() => calculateControlDateKpis(activeControlSnapshot), [activeControlSnapshot]);
   const upcomingControlMilestones = useMemo(() => getUpcomingControlMilestones(activeControlSnapshot, 12), [activeControlSnapshot]);
@@ -90,6 +108,13 @@ export default function App() {
   const controlTimeline = useMemo(() => buildControlTimeline(activeControlSnapshot), [activeControlSnapshot]);
   const controlIntervals = useMemo(() => buildControlDateIntervals(activeControlSnapshot), [activeControlSnapshot]);
   const controlIssues = useMemo(() => buildControlDateIssues(activeControlSnapshot), [activeControlSnapshot]);
+  const portfolioKpis = useMemo(() => calculatePortfolioKpis(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioStatuses = useMemo(() => groupPortfolioByStatus(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioCollections = useMemo(() => groupPortfolioByCollection(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioSuppliers = useMemo(() => groupPortfolioBySupplier(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioTypes = useMemo(() => groupPortfolioByProductType(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioStages = useMemo(() => buildPortfolioStageStats(activePortfolioSnapshot), [activePortfolioSnapshot]);
+  const portfolioProblems = useMemo(() => buildPortfolioProblemItems(activePortfolioSnapshot), [activePortfolioSnapshot]);
   const departmentData = useMemo(() => groupByDepartment(activeSnapshot?.rows ?? []), [activeSnapshot]);
   const statusData = useMemo(() => groupByStatus(activeSnapshot?.rows ?? []), [activeSnapshot]);
   const history = useMemo(() => buildHistory(snapshots), [snapshots]);
@@ -116,14 +141,19 @@ export default function App() {
       const controlSnapshots = state.snapshots
         .filter((snapshot) => snapshot.dashboardType === "controlDates")
         .map((snapshot) => snapshot.payload as ControlDateSnapshot);
+      const serverPortfolioSnapshots = state.snapshots
+        .filter((snapshot) => snapshot.dashboardType === "portfolio")
+        .map((snapshot) => snapshot.payload as PortfolioSnapshot);
 
       setSnapshots(productionSnapshots);
       setControlDateSnapshots(controlSnapshots);
+      setPortfolioSnapshots(serverPortfolioSnapshots);
       setUploadHistory(state.uploads);
       setServerMode("online");
 
       if (!activeSnapshotId && productionSnapshots.length) setActiveSnapshotId(productionSnapshots.at(-1)!.id);
       if (!activeControlSnapshotId && controlSnapshots.length) setActiveControlSnapshotId(controlSnapshots.at(-1)!.id);
+      if (!activePortfolioSnapshotId && serverPortfolioSnapshots.length) setActivePortfolioSnapshotId(serverPortfolioSnapshots.at(-1)!.id);
     } catch {
       setServerMode("offline");
     }
@@ -146,6 +176,20 @@ export default function App() {
         return;
       }
 
+      const portfolioSnapshot = await parsePortfolioWorkbook(file, uploadDate);
+      if (portfolioSnapshot) {
+        const serverUpload = await tryPersistOnServer("portfolio", file, portfolioSnapshot);
+        const nextPortfolioSnapshots = [...portfolioSnapshots, portfolioSnapshot].sort(sortSnapshotsByDataDateAndUploadTime);
+        setPortfolioSnapshots(nextPortfolioSnapshots);
+        savePortfolioSnapshots(nextPortfolioSnapshots);
+        setActivePortfolioSnapshotId(portfolioSnapshot.id);
+        setActiveTab("portfolio");
+        setUploadMessage(
+          `Загружен производственный портфель: ${portfolioSnapshot.rows.length} позиций. ${serverUpload ? "История сохранена на сервере." : "Сервер недоступен, сохранено локально."}`,
+        );
+        return;
+      }
+
       const snapshot = await parseWorkbook(file, uploadDate);
       const serverUpload = await tryPersistOnServer("production", file, snapshot);
       const next = [...snapshots, snapshot].sort(sortSnapshotsByDataDateAndUploadTime);
@@ -159,7 +203,7 @@ export default function App() {
     }
   }
 
-  async function tryPersistOnServer(dashboardType: "production" | "controlDates", file: File, payload: Snapshot | ControlDateSnapshot) {
+  async function tryPersistOnServer(dashboardType: "production" | "controlDates" | "portfolio", file: File, payload: Snapshot | ControlDateSnapshot | PortfolioSnapshot) {
     try {
       const upload = await uploadSnapshotToServer({ dashboardType, snapshotDate: uploadDate, file, payload });
       setServerMode("online");
@@ -217,10 +261,14 @@ export default function App() {
           <label className="date-select">
             <CalendarDays size={18} />
             <select
-              value={activeTab === "controlDates" ? activeControlSnapshot?.id ?? "" : activeSnapshot?.id ?? ""}
-              onChange={(event) => (activeTab === "controlDates" ? setActiveControlSnapshotId(event.target.value) : setActiveSnapshotId(event.target.value))}
+              value={activeTab === "controlDates" ? activeControlSnapshot?.id ?? "" : activeTab === "portfolio" ? activePortfolioSnapshot?.id ?? "" : activeSnapshot?.id ?? ""}
+              onChange={(event) => {
+                if (activeTab === "controlDates") setActiveControlSnapshotId(event.target.value);
+                else if (activeTab === "portfolio") setActivePortfolioSnapshotId(event.target.value);
+                else setActiveSnapshotId(event.target.value);
+              }}
             >
-              {(activeTab === "controlDates" ? controlDateSnapshots : snapshots).map((snapshot) => (
+              {(activeTab === "controlDates" ? controlDateSnapshots : activeTab === "portfolio" ? portfolioSnapshots : snapshots).map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
                   {formatSnapshotOption(snapshot)}
                 </option>
@@ -372,6 +420,151 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+          </DashboardSection>
+        )}
+
+        {activeTab === "portfolio" && (
+          <DashboardSection title="Производственный портфель" subtitle={activePortfolioSnapshot?.sourceName ?? "Загрузите XLSX с листом выгрузки производства"}>
+            <div className="kpi-grid portfolio-kpis">
+              <article className="kpi-card">
+                <span>Позиции</span>
+                <strong>{formatNumber(portfolioKpis.positions)}</strong>
+              </article>
+              <article className="kpi-card">
+                <span>Заказ, шт</span>
+                <strong>{formatNumber(portfolioKpis.qty)}</strong>
+              </article>
+              <article className="kpi-card">
+                <span>Коллекции</span>
+                <strong>{portfolioKpis.collections}</strong>
+              </article>
+              <article className="kpi-card">
+                <span>Поставщики</span>
+                <strong>{portfolioKpis.suppliers}</strong>
+              </article>
+              <article className="kpi-card">
+                <span>Без статуса</span>
+                <strong>{portfolioKpis.withoutStatus}</strong>
+              </article>
+              <article className="kpi-card">
+                <span>Просрочки</span>
+                <strong>{portfolioKpis.overdue}</strong>
+              </article>
+            </div>
+
+            <div className="chart-grid">
+              <Panel title="Статусы производства">
+                <ResponsiveContainer width="100%" height={320}>
+                  <BarChart data={portfolioStatuses} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" />
+                    <YAxis dataKey="name" type="category" width={150} />
+                    <Tooltip />
+                    <Bar dataKey="count" name="Позиций" fill="#255c5c" radius={[0, 5, 5, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Panel>
+              <Panel title="Коллекции">
+                <ResponsiveContainer width="100%" height={320}>
+                  <BarChart data={portfolioCollections}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Bar dataKey="count" name="Позиций" fill="#4e6b9f" radius={[5, 5, 0, 0]} />
+                    <Bar dataKey="qty" name="Штук" fill="#e0a13a" radius={[5, 5, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Panel>
+            </div>
+
+            <div className="chart-grid">
+              <Panel title="Поставщики по объему">
+                <div className="rank-list">
+                  {portfolioSuppliers.map((item) => (
+                    <div key={item.name}>
+                      <strong>{item.name}</strong>
+                      <span>{formatNumber(item.count)} поз.</span>
+                      <small>{formatNumber(item.qty)} шт</small>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+              <Panel title="Типы изделий">
+                <ResponsiveContainer width="100%" height={320}>
+                  <PieChart>
+                    <Pie data={portfolioTypes} dataKey="count" nameKey="name" innerRadius={58} outerRadius={105} paddingAngle={3}>
+                      {portfolioTypes.map((_, index) => (
+                        <Cell key={index} fill={colors[index % colors.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </Panel>
+            </div>
+
+            <Panel title="Контроль этапов">
+              <div className="table-panel embedded">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Этап</th>
+                      <th>План</th>
+                      <th>Факт</th>
+                      <th>Просрочено без факта</th>
+                      <th>Факт позже плана</th>
+                      <th>Среднее опоздание</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolioStages.map((stage) => (
+                      <tr key={stage.key}>
+                        <td>{stage.name}</td>
+                        <td>{stage.planned}</td>
+                        <td>{stage.completed}</td>
+                        <td>{stage.overdue}</td>
+                        <td>{stage.late}</td>
+                        <td>{stage.avgLateDays} дн.</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+
+            <Panel title="Проблемные позиции">
+              <div className="table-panel embedded">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Проблема</th>
+                      <th>Дней</th>
+                      <th>Индекс</th>
+                      <th>Номенклатура</th>
+                      <th>Коллекция</th>
+                      <th>Тип</th>
+                      <th>Поставщик</th>
+                      <th>Статус</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolioProblems.map((problem, index) => (
+                      <tr key={`${problem.item.id}-${problem.issue}-${index}`}>
+                        <td>{problem.issue}</td>
+                        <td>{problem.daysLate ?? "—"}</td>
+                        <td>{problem.item.index}</td>
+                        <td>{problem.item.nomenclature}</td>
+                        <td>{problem.item.collection}</td>
+                        <td>{problem.item.productType}</td>
+                        <td>{problem.item.supplier || "—"}</td>
+                        <td>{problem.item.status || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
           </DashboardSection>
         )}
 
@@ -560,7 +753,7 @@ function UploadHistoryTable({ uploads, onDelete }: { uploads: UploadHistoryRecor
         <tbody>
           {uploads.map((upload) => (
             <tr key={upload.id}>
-              <td>{upload.dashboardType === "controlDates" ? "Контрольные даты" : "Производство"}</td>
+              <td>{formatDashboardType(upload.dashboardType)}</td>
               <td>{upload.originalName}</td>
               <td>{formatDate(upload.snapshotDate)}</td>
               <td>{formatDate(upload.uploadedAt)}</td>
@@ -704,6 +897,12 @@ function formatFileSize(value: number) {
   if (value < 1024) return `${value} Б`;
   if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} КБ`;
   return `${Math.round(value / 1024 / 102.4) / 10} МБ`;
+}
+
+function formatDashboardType(type: UploadHistoryRecord["dashboardType"]) {
+  if (type === "controlDates") return "Контрольные даты";
+  if (type === "portfolio") return "Портфель";
+  return "Производство";
 }
 
 function formatSnapshotOption(snapshot: Pick<Snapshot | ControlDateSnapshot, "date" | "sourceName" | "uploadedAt">) {
