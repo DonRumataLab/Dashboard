@@ -85,7 +85,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/uploads") {
-      sendJson(response, { uploads: listUploads.all() });
+      sendJson(response, { uploads: listUploads.all().map(mapUploadRow) });
       return;
     }
 
@@ -175,6 +175,21 @@ async function persistUpload(body, uploaderIp) {
     uploadedAt,
     uploaderIp,
     rowCount,
+  };
+}
+
+function mapUploadRow(row) {
+  return {
+    id: row.id,
+    dashboardType: row.dashboard_type,
+    snapshotDate: row.snapshot_date,
+    originalName: row.original_name,
+    storedName: row.stored_name,
+    fileSize: row.file_size,
+    mimeType: row.mime_type,
+    uploadedAt: row.uploaded_at,
+    uploaderIp: row.uploader_ip,
+    rowCount: row.row_count,
   };
 }
 

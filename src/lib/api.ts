@@ -26,11 +26,11 @@ export async function fetchServerState() {
   }
 
   const snapshotsJson = (await snapshotsResponse.json()) as { snapshots: ServerSnapshot[] };
-  const uploadsJson = (await uploadsResponse.json()) as { uploads: UploadHistoryRecord[] };
+  const uploadsJson = (await uploadsResponse.json()) as { uploads: Array<UploadHistoryRecord | ServerUploadRecord> };
 
   return {
     snapshots: snapshotsJson.snapshots,
-    uploads: uploadsJson.uploads,
+    uploads: uploadsJson.uploads.map(normalizeUploadRecord),
   };
 }
 
@@ -88,4 +88,34 @@ function fileToBase64(file: File) {
     reader.onerror = () => reject(reader.error ?? new Error("Cannot read file"));
     reader.readAsDataURL(file);
   });
+}
+
+type ServerUploadRecord = {
+  id: string;
+  dashboard_type: DashboardType;
+  snapshot_date: string;
+  original_name: string;
+  stored_name: string;
+  file_size: number;
+  mime_type?: string;
+  uploaded_at: string;
+  uploader_ip: string;
+  row_count: number;
+};
+
+function normalizeUploadRecord(upload: UploadHistoryRecord | ServerUploadRecord): UploadHistoryRecord {
+  if ("dashboardType" in upload) return upload;
+
+  return {
+    id: upload.id,
+    dashboardType: upload.dashboard_type,
+    snapshotDate: upload.snapshot_date,
+    originalName: upload.original_name,
+    storedName: upload.stored_name,
+    fileSize: upload.file_size,
+    mimeType: upload.mime_type,
+    uploadedAt: upload.uploaded_at,
+    uploaderIp: upload.uploader_ip,
+    rowCount: upload.row_count,
+  };
 }
